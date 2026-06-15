@@ -109,4 +109,5 @@ export const COMPONENT_TEMPLATES = {
   i2s_amp: { name: 'I2S Class-D amp', role: 'actuator', voltage: { min: 2.7, typ: 5.0, max: 5.5 }, current: { active_mA: 700, peak_mA: 1500, sleep_uA: 5 }, signal: { domain: 'mixed', acdc: 'dc' }, io: { logic_level_V: 3.3, interfaces: ['i2s'] }, _verify: true },
   speaker: { name: 'Speaker 4 ohm', role: 'actuator', voltage: { min: 0, typ: 0, max: 0 }, current: { active_mA: 0, peak_mA: 0, sleep_uA: 0 }, signal: { domain: 'analog', acdc: 'ac' }, io: { logic_level_V: 0, interfaces: [] }, _verify: true },
   motor: { name: 'DC motor', role: 'actuator', voltage: { min: 3, typ: 5, max: 12 }, current: { active_mA: 300, peak_mA: 1200, sleep_uA: 0 }, signal: { domain: 'power', acdc: 'dc' }, io: { logic_level_V: 0, interfaces: [] }, inductive: true, _verify: true },
+  led: { name: 'LED', role: 'actuator', led: true, vf: 2.0, ifMa: 10, voltage: { min: 1.8, typ: 2.0, max: 3.6 }, current: { active_mA: 10, peak_mA: 20, sleep_uA: 0 }, signal: { domain: 'analog', acdc: 'dc' }, io: { logic_level_V: 0, interfaces: [] }, _verify: true },
 };
