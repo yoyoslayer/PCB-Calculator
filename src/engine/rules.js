@@ -106,7 +106,7 @@ export function componentAdvice(block, ctx = {}) {
       title,
       value: `${Math.max(tw.widthMm, FLOOR_MM).toFixed(3)} mm`,
       detail: thin
-        ? `${lead} That is little current, so the formula allows a very thin trace. Use your fab minimum of about ${FLOOR_MM} millimetres instead.`
+        ? `${lead} The formula allows a trace thinner than most fabs can reliably make, so use your fab minimum of about ${FLOOR_MM} millimetres instead.`
         : `${lead} Make the trace at least this wide.`,
       cite: `IPC-2221 at a 10 degree rise, ${oz} ounce copper`,
     };

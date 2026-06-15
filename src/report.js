@@ -1,3 +1,5 @@
+import { componentAdvice, railFeeds } from './engine/rules.js';
+
 /**
  * Builds a human-readable Markdown report of every recommendation in the project.
  * Only includes stages that have been completed.
@@ -39,6 +41,32 @@ export function buildReport(state) {
     blank();
     p('Parts:');
     (s.blocks || []).forEach((b) => li(`${b.id}, ${b.name}, role ${b.role}, voltage ${b.voltage.min} to ${b.voltage.max} volts${b.lcsc ? `, LCSC ${b.lcsc}` : ''}`));
+
+    // Per part recommendations, recomputed from the saved parts so the report matches the app.
+    const blocks = s.blocks || [];
+    const source = blocks.find((b) => b.role === 'source') || null;
+    const busVcc = s.buses?.[0]?.vcc;
+    const copperOz = d.stage1?.constraintSeed?.copperOz ?? 1;
+    const regOut = {};
+    blocks.filter((b) => b.role === 'regulator').forEach((reg) => {
+      regOut[reg.id] = blocks
+        .filter((l) => ['controller', 'sensor', 'actuator'].includes(l.role) && railFeeds(reg, l))
+        .reduce((sum, l) => sum + (Number(l.current.active_mA) || 0), 0) / 1000;
+    });
+    const perPart = [];
+    blocks.forEach((b) => {
+      const recs = componentAdvice(b, { source, busVcc, copperOz, regOutA: regOut[b.id] });
+      if (recs.length) perPart.push([b, recs]);
+    });
+    if (perPart.length) {
+      blank();
+      p('Automatic recommendations per part, each from a formula:');
+      perPart.forEach(([b, recs]) => {
+        li(`${b.id} ${b.name}`);
+        recs.forEach((r) => L.push(`  - ${r.title}: ${r.value}. ${r.detail} [${r.cite}]`));
+      });
+    }
+
     if (s.issues?.length) {
       blank(); p('Checks:');
       s.issues.forEach((i) => li(typeof i === 'string' ? i : i.text));
