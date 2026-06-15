@@ -8,6 +8,8 @@ import Stage4 from './stages/Stage4.jsx';
 import Stage5 from './stages/Stage5.jsx';
 import Stage6 from './stages/Stage6.jsx';
 import Glossary from './stages/Glossary.jsx';
+import CategoryPage from './stages/CategoryPage.jsx';
+import { CATEGORY_PAGES } from './config/catalog/index.js';
 
 const STAGE_COMPONENTS = {
   stage1: Stage1, stage2: Stage2, stage3: Stage3,
@@ -18,8 +20,16 @@ export default function App() {
   const { state, setActive, rename, exportJSON, importJSON, exportReport, reset } = useDesign();
   const fileRef = useRef(null);
   const lastStage = useRef('stage1');
-  if (state.active !== 'glossary') lastStage.current = state.active;
+  if (state.active.startsWith('stage')) lastStage.current = state.active;
+
+  const isCatalog = state.active.startsWith('catalog:');
   const Active = STAGE_COMPONENTS[state.active];
+
+  let view;
+  if (state.active === 'glossary') view = <Glossary onClose={() => setActive(lastStage.current)} />;
+  else if (isCatalog) view = <CategoryPage catKey={state.active.slice('catalog:'.length)} />;
+  else if (Active) view = <Active />;
+  else view = <Stage1 />;
 
   return (
     <div className="app">
@@ -54,6 +64,19 @@ export default function App() {
           })}
         </div>
 
+        <div className="catnav">
+          <div className="stack__caption">Browse parts</div>
+          {CATEGORY_PAGES.map((p) => (
+            <button
+              key={p.key}
+              className={`catlink ${state.active === `catalog:${p.key}` ? 'is-active' : ''}`}
+              onClick={() => setActive(`catalog:${p.key}`)}
+            >
+              {p.nav}
+            </button>
+          ))}
+        </div>
+
         <div className="rail__spacer" />
 
         <div className="rail__io">
@@ -82,9 +105,7 @@ export default function App() {
         </div>
       </nav>
 
-      <main className="main">
-        {state.active === 'glossary' ? <Glossary onClose={() => setActive(lastStage.current)} /> : <Active />}
-      </main>
+      <main className="main">{view}</main>
     </div>
   );
 }
