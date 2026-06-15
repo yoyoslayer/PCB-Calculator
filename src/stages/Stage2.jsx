@@ -1,26 +1,19 @@
-import { useMemo, useState } from 'react';
-import { useDesign } from '../store.jsx';
+import { useEffect, useMemo, useState } from 'react';
+import { useDesign, makeRef } from '../store.jsx';
 import { COMPONENT_TEMPLATES, POWER_SOURCES } from '../config/data.js';
 import {
-  currentBudget, batteryLife, traceWidthIPC2221, regulatorAdvice,
+  batteryLife, traceWidthIPC2221, regulatorAdvice,
   voltageDivider, solveDividerR2, ledResistor, i2cPullup, bulkCapForDroop, nearestESeries,
 } from '../engine/calculators.js';
-import { runChecks } from '../engine/rules.js';
+import { runChecks, componentAdvice, railFeeds } from '../engine/rules.js';
+import { CATALOG_BY_LCSC } from '../config/catalog/index.js';
 import {
   Panel, Field, NumberField, TextField, Select, Button, Pill, Stat, Callout, Drawer,
 } from '../ui.jsx';
 import StageShell from './StageShell.jsx';
 
-let uid = 0;
-const newId = (role) => `${role[0]}${++uid}`;
-
 const ROLE_TONE = { source: 'copper', regulator: 'copper', controller: 'mask', sensor: 'mask', actuator: 'warn', passive: 'default' };
 const TEMPLATE_OPTIONS = Object.entries(COMPONENT_TEMPLATES).map(([k, v]) => ({ value: k, label: v.name }));
-
-function instantiate(key) {
-  const t = COMPONENT_TEMPLATES[key];
-  return { ...structuredClone(t), id: newId(t.role) };
-}
 
 function splitDesign(blocks) {
   const source = blocks.find((b) => b.role === 'source') || null;
@@ -35,41 +28,51 @@ function splitDesign(blocks) {
 }
 
 export default function Stage2() {
-  const { state, setData } = useDesign();
+  const { state, setData, seedBom, addPart, updatePart, removePart } = useDesign();
   const stage1 = state.data.stage1;
   const saved = state.data.stage2;
-
-  const [blocks, setBlocks] = useState(() => {
-    if (saved?.blocks) return saved.blocks;
-    const seeded = [];
-    if (stage1?.powerSource && POWER_SOURCES[stage1.powerSource]) {
-      seeded.push({ ...structuredClone(POWER_SOURCES[stage1.powerSource]) });
-    }
-    (stage1?.seedBlocks || []).forEach((k) => COMPONENT_TEMPLATES[k] && seeded.push(instantiate(k)));
-    return seeded;
-  });
+  const blocks = state.bom;
   const [addKey, setAddKey] = useState('');
+
+  // Seed the bill of materials once, from the requirements stage.
+  useEffect(() => {
+    if (state.bomSeeded || !stage1) return;
+    const seeded = [];
+    const push = (tpl) => { const blk = structuredClone(tpl); blk.id = makeRef(seeded, blk.role); seeded.push(blk); };
+    if (stage1.powerSource && POWER_SOURCES[stage1.powerSource]) push(POWER_SOURCES[stage1.powerSource]);
+    (stage1.seedBlocks || []).forEach((k) => COMPONENT_TEMPLATES[k] && push(COMPONENT_TEMPLATES[k]));
+    seedBom(seeded);
+  }, [state.bomSeeded, stage1, seedBom]);
 
   const design = useMemo(() => splitDesign(blocks), [blocks]);
   const checks = useMemo(() => runChecks(design), [design]);
   const source = design.source;
   const capacity = source?.capacityMah;
   const life = capacity ? batteryLife(capacity, checks.budget.activeMa) : null;
+  const copperOz = stage1?.constraintSeed?.copperOz ?? 1;
 
-  function update(id, patch) {
-    setBlocks((bs) => bs.map((b) => (b.id === id ? { ...b, ...patch } : b)));
+  // Downstream current each regulator must carry, used by its automatic advice.
+  const regOut = useMemo(() => {
+    const map = {};
+    design.regulators.forEach((reg) => {
+      map[reg.id] = design.loads.filter((l) => railFeeds(reg, l)).reduce((s, l) => s + (Number(l.current.active_mA) || 0), 0) / 1000;
+    });
+    return map;
+  }, [design]);
+
+  function ctxFor(b) {
+    return {
+      source: design.source,
+      busVcc: design.buses[0]?.vcc,
+      copperOz,
+      regOutA: regOut[b.id],
+      driver: b.driverLcsc ? CATALOG_BY_LCSC[b.driverLcsc] : undefined,
+    };
   }
-  function updateCurrent(id, field, val) {
-    setBlocks((bs) => bs.map((b) => (b.id === id ? { ...b, current: { ...b.current, [field]: val } } : b)));
-  }
-  function updateVtyp(id, val) {
-    setBlocks((bs) => bs.map((b) => (b.id === id ? { ...b, voltage: { ...b.voltage, typ: val } } : b)));
-  }
-  function updateLcsc(id, val) {
-    setBlocks((bs) => bs.map((b) => (b.id === id ? { ...b, lcsc: val } : b)));
-  }
-  function remove(id) { setBlocks((bs) => bs.filter((b) => b.id !== id)); }
-  function add() { if (addKey) { setBlocks((bs) => [...bs, instantiate(addKey)]); setAddKey(''); } }
+
+  const updateCurrent = (id, field, val) => updatePart(id, { current: { ...blocks.find((b) => b.id === id).current, [field]: val } });
+  const updateVtyp = (id, val) => updatePart(id, { voltage: { ...blocks.find((b) => b.id === id).voltage, typ: val } });
+  const add = () => { if (addKey) { addPart(structuredClone(COMPONENT_TEMPLATES[addKey])); setAddKey(''); } };
 
   function save() {
     setData('stage2', {
@@ -96,77 +99,50 @@ export default function Stage2() {
   return (
     <StageShell
       stageKey="stage2"
-      title="Pick the parts, then let the checks fill the gaps"
-      lead="Start with the essential parts. Set each part's current and voltage. The engine checks the design and appends supporting parts until the bill of materials holds together. Every number traces to a formula."
+      title="Set each part, get its plan automatically"
+      lead="Set each part's voltage and current. The moment you do, this stage works out the supporting parts that part needs, the regulator type, the decoupling, the pull-ups, the driver, and the trace width, all from formulas. Browse the catalog pages in the sidebar to drop in real parts."
     >
       <Panel
         title="Bill of materials"
-        kicker="Most essential first"
+        kicker="Each part shows its own recommendations"
         action={
           <div className="rail__row">
-            <Select value={addKey} onChange={setAddKey} options={TEMPLATE_OPTIONS} placeholder="Add a part" />
+            <Select value={addKey} onChange={setAddKey} options={TEMPLATE_OPTIONS} placeholder="Add a generic part" />
             <Button variant="copper" onClick={add} disabled={!addKey}>Add</Button>
           </div>
         }
       >
-        {blocks.length === 0 && <div className="empty">No parts yet. Add your main chip first, then build outward.</div>}
+        {blocks.length === 0 && <div className="empty">No parts yet. Add a generic part above, or open a catalog page from the sidebar.</div>}
         <div className="itemlist">
           {blocks.map((b) => (
-            <div key={b.id} className="panel" style={{ margin: 0 }}>
-              <div className="panel__head" style={{ padding: '11px 14px' }}>
-                <div className="item__main">
-                  <div className="item__name">
-                    {b.name} <Pill tone={ROLE_TONE[b.role]}>{b.role}</Pill>
-                    {b._verify && <span className="cite"> verify vs datasheet</span>}
-                  </div>
-                  <div className="item__meta">{b.id} &middot; {b.io?.interfaces?.join(', ') || 'no digital bus'}</div>
-                </div>
-                <Button variant="danger" onClick={() => remove(b.id)}>Remove</Button>
-              </div>
-              <div className="panel__body" style={{ padding: '13px 14px' }}>
-                <div className="item__meta" style={{ marginBottom: 10 }}>
-                  Operating voltage range: <span className="mono">{b.voltage.min} to {b.voltage.max} volts</span>
-                </div>
-                <div className="grid grid--3">
-                  <Field label="Typical voltage"><NumberField value={b.voltage.typ} onChange={(v) => updateVtyp(b.id, v)} suffix="V" /></Field>
-                  <Field label="Active current"><NumberField value={b.current.active_mA} onChange={(v) => updateCurrent(b.id, 'active_mA', v)} suffix="mA" /></Field>
-                  <Field label="Peak current"><NumberField value={b.current.peak_mA} onChange={(v) => updateCurrent(b.id, 'peak_mA', v)} suffix="mA" /></Field>
-                  <Field label="Sleep current"><NumberField value={b.current.sleep_uA} onChange={(v) => updateCurrent(b.id, 'sleep_uA', v)} suffix="uA" /></Field>
-                  {['controller', 'sensor', 'actuator'].includes(b.role) && (
-                    <Field label="Duty cycle" hint="0 to 1, the share of time the part is active"><NumberField value={b.dutyCycle ?? 1} onChange={(v) => update(b.id, { dutyCycle: v })} min={0} /></Field>
-                  )}
-                </div>
-                <div className="grid grid--2" style={{ marginTop: 12 }}>
-                  <Field label="LCSC part number" hint="The real part you chose, like C2040. Use the finder below.">
-                    <TextField value={b.lcsc || ''} onChange={(v) => updateLcsc(b.id, v)} placeholder="C2040" />
-                  </Field>
-                  {b.lcsc && (
-                    <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 2 }}>
-                      <a className="btn btn--ghost btn--small" href={`https://www.lcsc.com/search?q=${encodeURIComponent(b.lcsc)}`} target="_blank" rel="noreferrer">View {b.lcsc} on LCSC</a>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
+            <ComponentCard
+              key={b.id}
+              b={b}
+              advice={componentAdvice(b, ctxFor(b))}
+              onVtyp={(v) => updateVtyp(b.id, v)}
+              onCurrent={(f, v) => updateCurrent(b.id, f, v)}
+              onPatch={(patch) => updatePart(b.id, patch)}
+              onRemove={() => removePart(b.id)}
+            />
           ))}
         </div>
       </Panel>
 
       <LcscFinder />
 
-      <Panel title="Power budget" kicker="Computed from the BOM">
+      <Panel title="Power budget" kicker="Computed from the parts above">
         <div className="stats">
-          <Stat label="Active draw (duty-weighted)" value={checks.budget.activeMa.toFixed(1)} unit="mA" tone="copper" />
-          <Stat label="Peak draw (worst case)" value={checks.budget.peakMa.toFixed(0)} unit="mA" tone="warn" />
+          <Stat label="Active draw, duty weighted" value={checks.budget.activeMa.toFixed(1)} unit="mA" tone="copper" />
+          <Stat label="Peak draw, worst case" value={checks.budget.peakMa.toFixed(0)} unit="mA" tone="warn" />
           <Stat label="Sleep draw" value={checks.budget.sleepUa.toFixed(1)} unit="uA" />
-          {life != null && <Stat label={`Runtime on ${capacity} mAh`} value={isFinite(life) ? life.toFixed(1) : '∞'} unit="h" tone="mask" />}
+          {life != null && <Stat label={`Runtime on ${capacity} mAh`} value={isFinite(life) ? life.toFixed(1) : 'forever'} unit="h" tone="mask" />}
         </div>
         <Callout tone="info">
-          Peak is summed worst-case, every part peaking at once. Real designs rarely do, but sizing the source and bulk caps for it is the safe choice. <span className="cite">currentBudget(), batteryLife() at 0.8 derate</span>
+          Peak adds every part peaking at once. Real designs rarely do, but sizing the source and the bulk capacitors for it is the safe choice. <span className="cite">currentBudget, batteryLife at a 0.8 derate</span>
         </Callout>
       </Panel>
 
-      <Panel title="Checks and what to add" kicker="Deterministic rules">
+      <Panel title="Whole board checks" kicker="Deterministic rules across all parts">
         {checks.issues.length === 0 && checks.additions.length === 0 && (
           <div className="empty">Add parts to run the checks.</div>
         )}
@@ -186,8 +162,8 @@ export default function Stage2() {
         )}
       </Panel>
 
-      <Panel title="Calculators" kicker="Run any of these as you size parts">
-        <TraceWidthCalc budget={checks.budget} copperOz={stage1.constraintSeed?.copperOz ?? 1} />
+      <Panel title="Manual calculators" kicker="Advanced and optional. The per part recommendations above are automatic.">
+        <TraceWidthCalc budget={checks.budget} copperOz={copperOz} />
         <RegulatorCalc source={source} />
         <DividerCalc />
         <LedCalc source={source} />
@@ -200,6 +176,76 @@ export default function Stage2() {
         {saved && <span className="cite">Saved. Stage 3 will list these parts for pin mapping.</span>}
       </div>
     </StageShell>
+  );
+}
+
+// One component, with its editable properties and its automatic recommendations.
+function ComponentCard({ b, advice, onVtyp, onCurrent, onPatch, onRemove }) {
+  const isLoad = ['controller', 'sensor', 'actuator'].includes(b.role);
+  const isIc = b.role === 'controller' || b.role === 'sensor';
+  return (
+    <div className="panel" style={{ margin: 0 }}>
+      <div className="panel__head" style={{ padding: '11px 14px' }}>
+        <div className="item__main">
+          <div className="item__name">
+            {b.name} <Pill tone={ROLE_TONE[b.role]}>{b.role}</Pill>
+            {b._verify && <span className="cite"> verify vs datasheet</span>}
+          </div>
+          <div className="item__meta">{b.id} &middot; {b.io?.interfaces?.join(', ') || 'no digital bus'}</div>
+        </div>
+        <Button variant="danger" onClick={onRemove}>Remove</Button>
+      </div>
+      <div className="panel__body" style={{ padding: '13px 14px' }}>
+        <div className="item__meta" style={{ marginBottom: 10 }}>
+          Operating voltage range: <span className="mono">{b.voltage.min} to {b.voltage.max} volts</span>
+        </div>
+        <div className="grid grid--3">
+          <Field label="Typical voltage"><NumberField value={b.voltage.typ} onChange={onVtyp} suffix="V" /></Field>
+          <Field label="Active current"><NumberField value={b.current.active_mA} onChange={(v) => onCurrent('active_mA', v)} suffix="mA" /></Field>
+          <Field label="Peak current"><NumberField value={b.current.peak_mA} onChange={(v) => onCurrent('peak_mA', v)} suffix="mA" /></Field>
+          <Field label="Sleep current"><NumberField value={b.current.sleep_uA} onChange={(v) => onCurrent('sleep_uA', v)} suffix="uA" /></Field>
+          {isLoad && (
+            <Field label="Duty cycle" hint="0 to 1, the share of time the part is active"><NumberField value={b.dutyCycle ?? 1} onChange={(v) => onPatch({ dutyCycle: v })} min={0} /></Field>
+          )}
+          {isIc && (
+            <Field label="Power pins" hint="How many power pins, for the decoupling count"><NumberField value={b.powerPins ?? (b.role === 'controller' ? 2 : 1)} onChange={(v) => onPatch({ powerPins: v })} min={1} /></Field>
+          )}
+          {b.led && (
+            <>
+              <Field label="LED forward voltage"><NumberField value={b.vf ?? 2.0} onChange={(v) => onPatch({ vf: v })} suffix="V" /></Field>
+              <Field label="LED current"><NumberField value={b.ifMa ?? 10} onChange={(v) => onPatch({ ifMa: v })} suffix="mA" /></Field>
+            </>
+          )}
+        </div>
+
+        <div className="grid grid--2" style={{ marginTop: 12 }}>
+          <Field label="LCSC part number" hint="The real part you chose, like C2040. Use a catalog page or the finder below.">
+            <TextField value={b.lcsc || ''} onChange={(v) => onPatch({ lcsc: v })} placeholder="C2040" />
+          </Field>
+          {b.lcsc && (
+            <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 2 }}>
+              <a className="btn btn--ghost btn--small" href={`https://www.lcsc.com/search?q=${encodeURIComponent(b.lcsc)}`} target="_blank" rel="noreferrer">View {b.lcsc} on LCSC</a>
+            </div>
+          )}
+        </div>
+
+        {advice.length > 0 && (
+          <div className="recs">
+            <div className="recs__cap">Automatic recommendations for this part</div>
+            {advice.map((r, i) => (
+              <div className="rec" key={i}>
+                <div className="rec__row">
+                  <span className="rec__title">{r.title}</span>
+                  <span className="rec__val mono">{r.value}</span>
+                </div>
+                <div className="rec__detail">{r.detail}</div>
+                <div className="cite">{r.cite}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -229,11 +275,11 @@ function LcscFinder() {
     if (query.trim()) window.open(`https://www.lcsc.com/search?q=${encodeURIComponent(query.trim())}`, '_blank', 'noopener');
   };
   return (
-    <Panel title="Find a part on LCSC" kicker="Search there, bring the part number back">
+    <Panel title="Find a part on LCSC" kicker="Tier one: search there. Tier two search lives in the sidebar.">
       <div className="grid grid--2">
-        <Field label="Describe what you need" hint="For example: 3.3V LDO 500mA SOT-23, or BME280.">
+        <Field label="Describe what you need" hint="For example: 3.3 volt regulator 500 milliamps, or BME280.">
           <div className="rail__row">
-            <TextField value={query} onChange={setQuery} placeholder="3.3V LDO 500mA" />
+            <TextField value={query} onChange={setQuery} placeholder="3.3 volt regulator 500 mA" />
             <Button variant="copper" onClick={openSearch} disabled={!query.trim()}>Search LCSC</Button>
           </div>
         </Field>
@@ -247,7 +293,7 @@ function LcscFinder() {
         </Field>
       </div>
       <Callout tone="info">
-        Search opens LCSC in a new tab. Pick a part there, copy its number like C2040, then paste it into the matching part above so it is saved with your design and shows in the report. The datasheet is on the part's LCSC page.
+        Search opens LCSC in a new tab. Pick a part there, copy its number like C2040, then paste it into the matching part above so it is saved with your design and shows in the report. For a faster search without leaving this site, open the parts search page from the sidebar.
       </Callout>
     </Panel>
   );
@@ -259,15 +305,15 @@ function TraceWidthCalc({ budget, copperOz }) {
   const [layer, setLayer] = useState('external');
   const r = traceWidthIPC2221(Number(i) || 0, Number(dt) || 10, copperOz, layer);
   return (
-    <Drawer label="Trace width for current (IPC-2221)">
+    <Drawer label="Trace width for current, IPC-2221">
       <div className="grid grid--3">
         <Field label="Current"><NumberField value={i} onChange={setI} suffix="A" /></Field>
-        <Field label="Temp rise"><NumberField value={dt} onChange={setDt} suffix="°C" /></Field>
+        <Field label="Temp rise"><NumberField value={dt} onChange={setDt} suffix="degrees C" /></Field>
         <Field label="Layer"><Select value={layer} onChange={setLayer} options={[{ value: 'external', label: 'External' }, { value: 'internal', label: 'Internal' }]} /></Field>
       </div>
-      <Result k="Cross-section" v={`${r.areaMils2.toFixed(1)} mil²`} />
+      <Result k="Cross-section" v={`${r.areaMils2.toFixed(1)} square mil`} />
       <Result k="Min width" v={`${r.widthMils.toFixed(1)} mil  /  ${r.widthMm.toFixed(3)} mm`} />
-      <Callout tone="info">{r.note} Using {copperOz} oz copper from your environment setting.</Callout>
+      <Callout tone="info">{r.note} Using {copperOz} ounce copper from your environment setting.</Callout>
     </Drawer>
   );
 }
@@ -278,14 +324,14 @@ function RegulatorCalc({ source }) {
   const [iout, setIout] = useState(0.5);
   const r = regulatorAdvice(Number(vin), Number(vout), Number(iout));
   return (
-    <Drawer label="LDO vs buck">
+    <Drawer label="Linear versus buck regulator">
       <div className="grid grid--3">
-        <Field label="Vin"><NumberField value={vin} onChange={setVin} suffix="V" /></Field>
-        <Field label="Vout"><NumberField value={vout} onChange={setVout} suffix="V" /></Field>
+        <Field label="Voltage in"><NumberField value={vin} onChange={setVin} suffix="V" /></Field>
+        <Field label="Voltage out"><NumberField value={vout} onChange={setVout} suffix="V" /></Field>
         <Field label="Load"><NumberField value={iout} onChange={setIout} suffix="A" /></Field>
       </div>
-      <Result k="LDO dissipation" v={`${r.ldoPowerW.toFixed(2)} W`} />
-      <Result k="LDO efficiency" v={`${(r.ldoEfficiency * 100).toFixed(0)} %`} />
+      <Result k="Linear regulator heat" v={`${r.ldoPowerW.toFixed(2)} W`} />
+      <Result k="Linear efficiency" v={`${(r.ldoEfficiency * 100).toFixed(0)} percent`} />
       <Callout tone={r.recommendation.startsWith('LDO') ? 'mask' : 'warn'}>{r.recommendation}</Callout>
     </Drawer>
   );
@@ -301,13 +347,13 @@ function DividerCalc() {
   return (
     <Drawer label="Voltage divider">
       <div className="grid grid--3">
-        <Field label="Vin"><NumberField value={vin} onChange={setVin} suffix="V" /></Field>
-        <Field label="Target Vout"><NumberField value={vout} onChange={setVout} suffix="V" /></Field>
-        <Field label="R1"><NumberField value={r1} onChange={setR1} suffix="Ω" /></Field>
+        <Field label="Voltage in"><NumberField value={vin} onChange={setVin} suffix="V" /></Field>
+        <Field label="Target voltage out"><NumberField value={vout} onChange={setVout} suffix="V" /></Field>
+        <Field label="R1"><NumberField value={r1} onChange={setR1} suffix="ohm" /></Field>
       </div>
-      <Result k="R2 ideal" v={`${r2.toFixed(0)} Ω`} />
-      <Result k="R2 nearest E24" v={`${r2e} Ω`} />
-      <Result k="Actual Vout" v={`${actual.vout.toFixed(3)} V`} />
+      <Result k="R2 ideal" v={`${r2.toFixed(0)} ohm`} />
+      <Result k="R2 nearest standard" v={`${r2e} ohm`} />
+      <Result k="Actual voltage out" v={`${actual.vout.toFixed(3)} V`} />
       <Result k="Divider current" v={`${actual.currentMa.toFixed(3)} mA`} />
     </Drawer>
   );
@@ -322,10 +368,10 @@ function LedCalc({ source }) {
     <Drawer label="LED series resistor">
       <div className="grid grid--3">
         <Field label="Supply"><NumberField value={vs} onChange={setVs} suffix="V" /></Field>
-        <Field label="LED Vf"><NumberField value={vf} onChange={setVf} suffix="V" /></Field>
+        <Field label="LED forward voltage"><NumberField value={vf} onChange={setVf} suffix="V" /></Field>
         <Field label="LED current"><NumberField value={i} onChange={setI} suffix="mA" /></Field>
       </div>
-      <Result k="Resistor" v={`${r.rOhm.toFixed(0)} Ω → ${r.nearestE12} Ω (E12)`} />
+      <Result k="Resistor" v={`${r.rOhm.toFixed(0)} ohm, nearest ${r.nearestE12} ohm`} />
       <Result k="Resistor power" v={`${(r.powerW * 1000).toFixed(1)} mW`} />
     </Drawer>
   );
@@ -337,15 +383,15 @@ function I2cCalc({ vcc }) {
   const [mode, setMode] = useState('fast');
   const r = i2cPullup(Number(v), { busCapPf: Number(cap), mode });
   return (
-    <Drawer label="I2C / logic pull-up sizing">
+    <Drawer label="I2C and logic pull-up sizing">
       <div className="grid grid--3">
-        <Field label="Bus Vcc"><NumberField value={v} onChange={setV} suffix="V" /></Field>
+        <Field label="Bus voltage"><NumberField value={v} onChange={setV} suffix="V" /></Field>
         <Field label="Bus capacitance"><NumberField value={cap} onChange={setCap} suffix="pF" /></Field>
-        <Field label="Mode"><Select value={mode} onChange={setMode} options={[{ value: 'standard', label: 'Standard 100k' }, { value: 'fast', label: 'Fast 400k' }, { value: 'fastplus', label: 'Fast+ 1M' }]} /></Field>
+        <Field label="Mode"><Select value={mode} onChange={setMode} options={[{ value: 'standard', label: 'Standard 100 kilohertz' }, { value: 'fast', label: 'Fast 400 kilohertz' }, { value: 'fastplus', label: 'Fast plus 1 megahertz' }]} /></Field>
       </div>
-      <Result k="Min (drive strength)" v={`${r.rpMinOhm.toFixed(0)} Ω`} />
-      <Result k="Max (rise time)" v={`${r.rpMaxOhm.toFixed(0)} Ω`} />
-      <Result k="Suggested" v={`${r.suggestedOhm} Ω`} />
+      <Result k="Lowest, from drive strength" v={`${r.rpMinOhm.toFixed(0)} ohm`} />
+      <Result k="Highest, from rise time" v={`${r.rpMaxOhm.toFixed(0)} ohm`} />
+      <Result k="Suggested" v={`${r.suggestedOhm} ohm`} />
       {!r.valid && <Callout tone="danger">No valid value: bus capacitance is too high for this mode. Reduce devices or trace length.</Callout>}
     </Drawer>
   );
@@ -363,9 +409,9 @@ function BulkCapCalc() {
         <Field label="Step duration"><NumberField value={dt} onChange={setDt} suffix="ms" /></Field>
         <Field label="Allowed droop"><NumberField value={droop} onChange={setDroop} suffix="V" /></Field>
       </div>
-      <Result k="Capacitance" v={`${r.microfarads.toFixed(1)} µF`} />
-      <Result k="Nearest standard" v={`${r.nearestUf} µF`} />
-      <Callout tone="info">C = I × t / V. Place near the load that causes the step.</Callout>
+      <Result k="Capacitance" v={`${r.microfarads.toFixed(1)} uF`} />
+      <Result k="Nearest standard" v={`${r.nearestUf} uF`} />
+      <Callout tone="info">Capacitance equals current times time divided by allowed droop. Place near the load that causes the step.</Callout>
     </Drawer>
   );
 }

@@ -308,6 +308,19 @@ body {
 .hint-list { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
 .hint-list li { margin: 4px 0; }
 
+/* ============================================================ per-part recommendations */
+.recs { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+.recs__cap {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 1px;
+  text-transform: uppercase; color: var(--mask); margin-bottom: 10px;
+}
+.rec { border-left: 2px solid var(--mask-dim); padding: 4px 0 6px 12px; margin-bottom: 9px; }
+.rec:last-child { margin-bottom: 0; }
+.rec__row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.rec__title { font-weight: 600; font-size: 13px; }
+.rec__val { color: var(--copper); font-weight: 600; font-size: 13px; text-align: right; white-space: nowrap; }
+.rec__detail { color: var(--muted); font-size: 12.5px; margin: 3px 0 2px; }
+
 .foot-nav { display: flex; justify-content: space-between; margin-top: 26px; }
 
 .empty { color: var(--faint); font-size: 13.5px; padding: 8px 0; }

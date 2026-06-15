@@ -2,8 +2,8 @@ import { useState, useMemo } from 'react';
 import { GLOSSARY } from '../config/glossary.js';
 import { Button } from '../ui.jsx';
 
-const CATS = ['Power', 'Signals', 'Board', 'Units'];
-const CAT_LABEL = { Power: 'Power', Signals: 'Signals and connections', Board: 'Board and manufacturing', Units: 'Units' };
+const CATS = ['Power', 'Signals', 'Parts', 'Board', 'Units'];
+const CAT_LABEL = { Power: 'Power', Signals: 'Signals and connections', Parts: 'Parts and sensors', Board: 'Board and manufacturing', Units: 'Units' };
 
 export default function Glossary({ onClose }) {
   const [q, setQ] = useState('');

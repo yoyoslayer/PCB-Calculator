@@ -4,6 +4,7 @@
  */
 import {
   currentBudget, regulatorAdvice, i2cPullup, traceWidthIPC2221, solveMicrostripWidth,
+  decouplingPlan, ledResistor,
 } from './calculators.js';
 
 // ------------------------------------------- Stage 2: verification + augmentation
@@ -83,6 +84,132 @@ export function railFeeds(rail, load) {
   if (!rail) return false;
   const v = rail.voltage.typ;
   return v >= load.voltage.min && v <= load.voltage.max;
+}
+
+// ------------------------------------------- Stage 2: per-component automatic advice
+// Returns a list of recommendations derived from one component's own properties.
+// Each item cites the rule or formula it came from. Pure: all inputs come in via ctx.
+// ctx: { source, busVcc, busCapPf, busMode, copperOz, regOutA, driver }
+export function componentAdvice(block, ctx = {}) {
+  const recs = [];
+  const oz = ctx.copperOz || 1;
+  const peakMa = Number(block.current?.peak_mA) || Number(block.current?.active_mA) || 0;
+  const peakA = peakMa / 1000;
+  const FLOOR_MM = 0.15; // a sensible minimum trace width when the current is tiny
+
+  // Trace width from a current, with the fab minimum as a floor. IPC-2221.
+  const traceRec = (title, amps, lead) => {
+    const tw = traceWidthIPC2221(amps, 10, oz, 'external');
+    const thin = tw.widthMm < FLOOR_MM;
+    return {
+      kind: 'trace',
+      title,
+      value: `${Math.max(tw.widthMm, FLOOR_MM).toFixed(3)} mm`,
+      detail: thin
+        ? `${lead} That is little current, so the formula allows a very thin trace. Use your fab minimum of about ${FLOOR_MM} millimetres instead.`
+        : `${lead} Make the trace at least this wide.`,
+      cite: `IPC-2221 at a 10 degree rise, ${oz} ounce copper`,
+    };
+  };
+
+  // Every power and ground connection: trace width from this part's current.
+  if (peakA > 0) {
+    recs.push(traceRec('Power and ground trace width', peakA, `This part can draw ${peakMa.toFixed(0)} milliamps.`));
+  }
+
+  // A regulator: linear versus switching, input and output capacitors, output rail width.
+  if (block.role === 'regulator') {
+    const vin = ctx.vinTyp ?? ctx.source?.voltage?.typ ?? null;
+    const vout = block.voltage?.typ;
+    const iout = ctx.regOutA ?? 0;
+    if (vin && vout) {
+      const adv = regulatorAdvice(vin, vout, iout || 0.1);
+      const isLdo = adv.recommendation.startsWith('LDO');
+      recs.push({
+        kind: 'reg',
+        title: 'Regulator type',
+        value: isLdo ? 'Linear regulator' : 'Switching buck converter',
+        detail: `From ${vin} volts in to ${vout} volts out at about ${(iout * 1000 || 0).toFixed(0)} milliamps. A linear regulator would turn about ${adv.ldoPowerW.toFixed(2)} watts into heat at ${(adv.ldoEfficiency * 100).toFixed(0)} percent efficiency. ${adv.recommendation}`,
+        cite: 'Power lost in a linear regulator is voltage drop times current',
+      });
+      recs.push({
+        kind: 'caps',
+        title: 'Input and output capacitors',
+        value: isLdo ? '1 microfarad in, 1 to 10 microfarads out' : '10 microfarads in, 22 microfarads out',
+        detail: isLdo
+          ? 'A typical linear regulator wants a small input capacitor and a stable output capacitor. Many need a low resistance type on the output. Confirm the exact values against the chip datasheet.'
+          : 'A typical buck converter wants bulk input and output capacitors to smooth the switching. Confirm the exact values and types against the chip datasheet.',
+        cite: 'Common starting values, verify against the datasheet',
+      });
+      if (iout > 0) {
+        recs.push(traceRec('Output rail trace width', iout, `The ${vout} volt rail carries about ${(iout * 1000).toFixed(0)} milliamps to everything it feeds.`));
+      }
+    }
+  }
+
+  // A controller or sensor: the decoupling plan.
+  if (block.role === 'controller' || block.role === 'sensor') {
+    const pins = Number(block.powerPins) || (block.role === 'controller' ? 2 : 1);
+    const plan = decouplingPlan(pins, 1);
+    recs.push({
+      kind: 'decap',
+      title: 'Decoupling capacitors',
+      value: `${pins} times 100 nanofarads, plus ${plan.bulkUf} microfarads bulk`,
+      detail: `Place one 100 nanofarad capacitor hard against each of the ${pins} power pin${pins > 1 ? 's' : ''}, then one ${plan.bulkUf} microfarad bulk capacitor for the rail.`,
+      cite: 'One 100 nanofarad capacitor per power pin, plus a bulk capacitor per rail',
+    });
+  }
+
+  // Any I2C device: the pull-up value for the bus, sized once per bus.
+  if ((block.io?.interfaces || []).includes('i2c')) {
+    const vcc = ctx.busVcc ?? block.voltage?.typ ?? 3.3;
+    const pu = i2cPullup(vcc, { busCapPf: ctx.busCapPf ?? 100, mode: ctx.busMode ?? 'fast' });
+    recs.push({
+      kind: 'pullup',
+      title: 'I2C pull-up resistors',
+      value: `${Math.round(pu.suggestedOhm)} ohms`,
+      detail: `Size these once for the whole bus at ${vcc} volts, not once per part. One on the data line and one on the clock line. The valid range is ${Math.round(pu.rpMinOhm)} to ${Math.round(pu.rpMaxOhm)} ohms.`,
+      cite: 'NXP I2C limits: lowest from drive strength, highest from rise time',
+    });
+  }
+
+  // A motor or any inductive part: flyback diode, driver, and trace width.
+  if (block.inductive) {
+    recs.push({
+      kind: 'flyback',
+      title: 'Flyback diode',
+      value: 'Add a diode across the coil',
+      detail: 'A motor or coil kicks back a high voltage spike when it is switched off. Put a diode across it to clamp that spike and protect the driver.',
+      cite: 'Inductive load protection',
+    });
+    const drv = ctx.driver;
+    recs.push({
+      kind: 'driver',
+      title: 'Driver',
+      value: drv ? drv.name : 'Use a transistor or driver chip',
+      detail: drv
+        ? `Do not switch this from a logic pin. ${drv.name} suits it, LCSC part ${drv.lcsc}.`
+        : 'Do not switch this from a logic pin. Use a transistor or an H bridge driver rated for the stall current.',
+      cite: drv ? 'Matched driver from the catalog' : 'Inductive loads need a driver',
+    });
+  }
+
+  // An LED, if present: the series resistor.
+  if (block.led) {
+    const vs = ctx.source?.voltage?.typ ?? block.voltage?.typ ?? 3.3;
+    const vf = Number(block.vf) || 2.0;
+    const ifMa = Number(block.ifMa) || 10;
+    const r = ledResistor(vs, vf, ifMa);
+    recs.push({
+      kind: 'led',
+      title: 'LED series resistor',
+      value: `${r.nearestE12} ohms`,
+      detail: `From a ${vs} volt supply, an LED dropping ${vf} volts at ${ifMa} milliamps needs about ${r.rOhm.toFixed(0)} ohms. The nearest standard value is ${r.nearestE12} ohms, dissipating ${(r.powerW * 1000).toFixed(1)} milliwatts.`,
+      cite: 'Resistor equals supply minus LED drop, divided by current',
+    });
+  }
+
+  return recs;
 }
 
 // ----------------------------------------------- Stage 5: manufacturer-driven rules
