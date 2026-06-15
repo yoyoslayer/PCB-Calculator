@@ -370,6 +370,15 @@ body {
 .card__links { display: flex; gap: 6px; flex-wrap: wrap; }
 .card__prefill { font-size: 11px; }
 
+/* ============================================================ parts search */
+.checkrow { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); padding-top: 9px; }
+.checkrow input { width: 16px; height: 16px; accent-color: var(--mask); }
+.tbl-wrap { overflow-x: auto; }
+.tbl--search td, .tbl--search th { vertical-align: top; }
+.tbl--search a { color: var(--mask); text-decoration: none; }
+.tbl--search a:hover { text-decoration: underline; }
+.search__desc { font-size: 12px; color: var(--muted); max-width: 360px; }
+
 /* ============================================================ responsive */
 @media (max-width: 820px) {
   .app { grid-template-columns: 1fr; }

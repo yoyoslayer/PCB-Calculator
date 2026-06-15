@@ -9,6 +9,7 @@ import Stage5 from './stages/Stage5.jsx';
 import Stage6 from './stages/Stage6.jsx';
 import Glossary from './stages/Glossary.jsx';
 import CategoryPage from './stages/CategoryPage.jsx';
+import SearchPage from './stages/SearchPage.jsx';
 import { CATEGORY_PAGES } from './config/catalog/index.js';
 
 const STAGE_COMPONENTS = {
@@ -27,6 +28,7 @@ export default function App() {
 
   let view;
   if (state.active === 'glossary') view = <Glossary onClose={() => setActive(lastStage.current)} />;
+  else if (state.active === 'search') view = <SearchPage />;
   else if (isCatalog) view = <CategoryPage catKey={state.active.slice('catalog:'.length)} />;
   else if (Active) view = <Active />;
   else view = <Stage1 />;
@@ -75,6 +77,12 @@ export default function App() {
               {p.nav}
             </button>
           ))}
+          <button
+            className={`catlink catlink--search ${state.active === 'search' ? 'is-active' : ''}`}
+            onClick={() => setActive('search')}
+          >
+            Search all parts
+          </button>
         </div>
 
         <div className="rail__spacer" />
