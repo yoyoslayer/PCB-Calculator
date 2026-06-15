@@ -8,8 +8,8 @@
   --line-bright: #324150;
 
   --text: #e7eef5;
-  --muted: #8a99a8;
-  --faint: #5d6b78;
+  --muted: #93a2b1;
+  --faint: #6f7e8c;
 
   /* solder-mask teal-green, muted not neon */
   --mask: #2bb89c;
@@ -61,10 +61,12 @@ body {
   padding: 22px 18px;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: 20px;
   position: sticky;
   top: 0;
   height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .brand { display: flex; align-items: baseline; gap: 8px; }
@@ -130,15 +132,21 @@ body {
 /* ---- catalog browse nav ---- */
 .catnav { display: flex; flex-direction: column; gap: 2px; }
 .catlink {
+  position: relative;
   text-align: left; width: 100%; background: transparent;
   border: 1px solid transparent; color: var(--muted); border-radius: var(--r-sm);
-  padding: 7px 10px; cursor: pointer; font: inherit; font-size: 13px;
+  padding: 7px 10px 7px 16px; cursor: pointer; font: inherit; font-size: 13px;
   transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
 }
 .catlink:hover { background: var(--panel); color: var(--text); }
 .catlink.is-active { background: var(--panel-2); color: var(--text); border-color: var(--mask-dim); }
+.catlink.is-active::before {
+  content: ''; position: absolute; left: 5px; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 13px; border-radius: 2px; background: var(--mask);
+}
 .catlink--search { margin-top: 6px; color: var(--copper); }
 .catlink--search.is-active { border-color: var(--copper-dim); }
+.catlink--search.is-active::before { background: var(--copper); }
 
 .rail__spacer { flex: 1; }
 .rail__io { display: flex; flex-direction: column; gap: 8px; }
@@ -425,3 +433,28 @@ body {
 .gloss__row:last-child { border-bottom: none; }
 .gloss__term { font-weight: 600; color: var(--text); margin-bottom: 3px; }
 .gloss__def { margin: 0; color: var(--muted); font-size: 13.5px; }
+
+/* ============================================================ visual refinements */
+/* Dark, quiet scrollbars to match the instrument feel. */
+* { scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent; }
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line-bright); border-radius: 8px; border: 3px solid var(--ink); }
+::-webkit-scrollbar-thumb:hover { background: var(--faint); }
+
+::selection { background: rgba(43, 184, 156, 0.30); color: #fff; }
+
+/* Every electrical value reads as aligned, tabular monospace. */
+.mono, .result-line__v, .rec__val, .stat__value, .stat__unit, .kv__row dd, .card__id, .tbl td.mono {
+  font-feature-settings: 'tnum' 1, 'zero' 1;
+}
+
+/* Quiet hover affordances. */
+.card { transition: border-color 0.14s ease, background 0.14s ease; }
+.card:hover { border-color: var(--line-bright); }
+.tbl--search tbody tr { transition: background 0.1s ease; }
+.tbl--search tbody tr:hover { background: var(--ink); }
+
+/* A touch more contrast on the stage title for readability at a glance. */
+.stage__title { color: #f2f6fa; }
+.panel__title { letter-spacing: -0.1px; }
