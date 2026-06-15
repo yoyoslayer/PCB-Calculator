@@ -22,3 +22,8 @@ dist-ssr/
 
 # vite cache
 .vite/
+
+# Parts dataset raw download (large, refreshed via scripts, not committed)
+data-raw/
+*.tgz
+*.sqlite3
